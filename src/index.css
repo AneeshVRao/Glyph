@@ -1,0 +1,218 @@
+@import url('@fontsource/jetbrains-mono/400.css');
+@import url('@fontsource/jetbrains-mono/700.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Terminal dark theme - inspired by classic CRT monitors */
+    --background: 220 15% 6%;
+    --foreground: 120 60% 75%;
+
+    --card: 220 15% 8%;
+    --card-foreground: 120 60% 75%;
+
+    --popover: 220 15% 8%;
+    --popover-foreground: 120 60% 75%;
+
+    /* Terminal green - main accent */
+    --primary: 120 60% 50%;
+    --primary-foreground: 220 15% 6%;
+
+    /* Dim terminal text */
+    --secondary: 220 10% 15%;
+    --secondary-foreground: 120 40% 60%;
+
+    --muted: 220 10% 12%;
+    --muted-foreground: 120 20% 45%;
+
+    /* Cyan accent for commands */
+    --accent: 180 70% 50%;
+    --accent-foreground: 220 15% 6%;
+
+    /* Error red */
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Warning yellow */
+    --warning: 45 100% 50%;
+    --warning-foreground: 220 15% 6%;
+
+    /* Success green */
+    --success: 120 70% 45%;
+    --success-foreground: 220 15% 6%;
+
+    --border: 120 30% 20%;
+    --input: 220 10% 12%;
+    --ring: 120 60% 50%;
+
+    --radius: 0.25rem;
+
+    /* Terminal specific */
+    --terminal-prompt: 120 80% 55%;
+    --terminal-command: 180 80% 60%;
+    --terminal-output: 120 50% 70%;
+    --terminal-error: 0 70% 60%;
+    --terminal-warning: 45 90% 60%;
+    --terminal-info: 210 80% 60%;
+    --terminal-dim: 120 15% 40%;
+    --terminal-glow: 120 100% 50%;
+
+    /* Scanline effect */
+    --scanline-opacity: 0.03;
+
+    --sidebar-background: 220 15% 6%;
+    --sidebar-foreground: 120 60% 75%;
+    --sidebar-primary: 120 60% 50%;
+    --sidebar-primary-foreground: 220 15% 6%;
+    --sidebar-accent: 220 10% 12%;
+    --sidebar-accent-foreground: 120 60% 75%;
+    --sidebar-border: 120 30% 20%;
+    --sidebar-ring: 120 60% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'liga' 1, 'calt' 1;
+  }
+
+  /* Custom scrollbar for terminal feel */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.5);
+  }
+}
+
+@layer components {
+  /* Terminal text colors */
+  .terminal-prompt {
+    color: hsl(var(--terminal-prompt));
+  }
+
+  .terminal-command {
+    color: hsl(var(--terminal-command));
+  }
+
+  .terminal-output {
+    color: hsl(var(--terminal-output));
+  }
+
+  .terminal-error {
+    color: hsl(var(--terminal-error));
+  }
+
+  .terminal-warning {
+    color: hsl(var(--terminal-warning));
+  }
+
+  .terminal-info {
+    color: hsl(var(--terminal-info));
+  }
+
+  .terminal-dim {
+    color: hsl(var(--terminal-dim));
+  }
+
+  .terminal-success {
+    color: hsl(var(--success));
+  }
+
+  /* Glow effects */
+  .glow-text {
+    text-shadow: 0 0 10px hsl(var(--terminal-glow) / 0.5),
+                 0 0 20px hsl(var(--terminal-glow) / 0.3),
+                 0 0 30px hsl(var(--terminal-glow) / 0.2);
+  }
+
+  .glow-border {
+    box-shadow: 0 0 10px hsl(var(--terminal-glow) / 0.2),
+                inset 0 0 10px hsl(var(--terminal-glow) / 0.05);
+  }
+
+  /* Scanline overlay */
+  .scanlines::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      hsl(0 0% 0% / var(--scanline-opacity)) 2px,
+      hsl(0 0% 0% / var(--scanline-opacity)) 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* Blinking cursor */
+  .cursor-blink {
+    animation: blink 1s step-end infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* CRT flicker effect (subtle) */
+  .crt-flicker {
+    animation: flicker 0.15s infinite;
+  }
+
+  @keyframes flicker {
+    0% { opacity: 0.97; }
+    50% { opacity: 1; }
+    100% { opacity: 0.98; }
+  }
+
+  /* Terminal container */
+  .terminal-container {
+    @apply relative overflow-hidden;
+    background: linear-gradient(
+      180deg,
+      hsl(var(--background)) 0%,
+      hsl(220 15% 4%) 100%
+    );
+  }
+
+  /* Selection style */
+  ::selection {
+    background: hsl(var(--primary) / 0.3);
+    color: hsl(var(--foreground));
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
