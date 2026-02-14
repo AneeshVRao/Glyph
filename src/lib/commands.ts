@@ -12,6 +12,7 @@ import {
   exportNotes,
   importNotes,
   getRecentlyDeleted,
+  purgeNote,
   getConfig,
   setConfig,
   getAllConfig,
@@ -29,7 +30,9 @@ export type OutputLine = {
     | "warning"
     | "info"
     | "success"
+    | "success"
     | "dim"
+    | "markdown"
     | "highlight";
   content: string;
   timestamp?: number;
@@ -96,6 +99,20 @@ const COMMAND_DEFINITIONS = {
     category: "notes",
     aliases: ["deleted"],
   },
+  rename: {
+    usage: 'rename <id> "new title"',
+    desc: "Rename a note",
+    examples: ['rename 1 "New Title"'],
+    category: "notes",
+    aliases: ["mv"],
+  },
+  purge: {
+    usage: "purge <id>",
+    desc: "Permanently delete from trash",
+    examples: ["purge 1"],
+    category: "notes",
+    aliases: [],
+  },
 
   // Search
   search: {
@@ -161,6 +178,13 @@ const COMMAND_DEFINITIONS = {
     examples: ["version"],
     category: "other",
     aliases: ["v"],
+  },
+  stats: {
+    usage: "stats",
+    desc: "Show note statistics",
+    examples: ["stats"],
+    category: "other",
+    aliases: ["info"],
   },
   help: {
     usage: "help [command]",
@@ -272,8 +296,17 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
     return { output: [] };
   }
 
+  // Security: reject excessively long input
+  if (trimmed.length > 1000) {
+    return {
+      output: [
+        { type: "error", content: "Input too long (max 1000 characters)" },
+      ],
+    };
+  }
+
   // Parse command and arguments
-  const match = trimmed.match(/^(\w+)(?:\s+(.*))?$/);
+  const match = trimmed.match(/^(\w+)(?:\s+(.*))?$/s);
   if (!match) {
     return {
       output: [
@@ -311,6 +344,12 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
       case "trash":
         return await handleTrash();
 
+      case "rename":
+        return await handleRename(argsStr);
+
+      case "purge":
+        return await handlePurge(argsStr);
+
       case "search":
         return await handleSearch(argsStr);
 
@@ -344,6 +383,9 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
             { type: "dim", content: "Created by Aneesh V Rao" },
           ],
         };
+
+      case "stats":
+        return await handleStats();
 
       default: {
         const suggestion = findSimilarCommand(command);
@@ -594,16 +636,11 @@ async function handleOpen(argsStr: string): Promise<CommandResult> {
 }
 
 function showNote(note: Note): CommandResult {
-  const lines = note.body.split("\n");
-
   return {
     output: [
       { type: "info", content: `╭─── #${note.id}: ${note.title} ───╮` },
       { type: "output", content: "" },
-      ...lines.map((line) => ({
-        type: "output" as const,
-        content: "  " + line,
-      })),
+      { type: "markdown", content: note.body },
       { type: "output", content: "" },
       { type: "dim", content: `Created: ${formatDate(note.createdAt)}` },
       { type: "dim", content: `Updated: ${formatDate(note.updatedAt)}` },
@@ -852,8 +889,8 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
   const [key, ...valueParts] = parts;
   const value = valueParts.join(" ");
 
-  // List all config
-  if (!key) {
+  // List all config — support both "config" (no args) and "config list"
+  if (!key || key === "list") {
     const config = await getAllConfig();
     return {
       output: [
@@ -884,7 +921,7 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
 
   // Validate known config keys
   const validKeys = ["theme", "scanlines", "autosave", "dateFormat"];
-  if (!validKeys.includes(key)) {
+  if (!validKeys.includes(key.toLowerCase())) {
     return {
       output: [
         { type: "error", content: `Unknown config key: ${key}` },
@@ -928,6 +965,150 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
               type: "dim" as const,
               content: "Theme updated. Changes apply immediately.",
             },
+          ]
+        : []),
+    ],
+  };
+}
+
+async function handleRename(argsStr: string): Promise<CommandResult> {
+  // Parse: rename <id> "new title" or rename <id> new-title
+  const match = argsStr.match(/^(\d+)\s+(?:"([^"]+)"|'([^']+)'|(.+))$/);
+  if (!match) {
+    return {
+      output: [
+        { type: "error", content: "Invalid format" },
+        { type: "dim", content: 'Usage: rename <id> "new title"' },
+        { type: "dim", content: 'Example: rename 1 "Better Title"' },
+      ],
+    };
+  }
+
+  const id = parseInt(match[1]);
+  const newTitle = (match[2] || match[3] || match[4]).trim();
+
+  if (!newTitle) {
+    return {
+      output: [{ type: "error", content: "Title cannot be empty" }],
+    };
+  }
+
+  const note = await getNote(id);
+  if (!note || note.deleted) {
+    return {
+      output: [{ type: "error", content: `Note #${id} not found` }],
+    };
+  }
+
+  const oldTitle = note.title;
+  await updateNote(id, { title: newTitle });
+
+  return {
+    output: [
+      { type: "success", content: `✓ Note #${id} renamed` },
+      { type: "dim", content: `  "${oldTitle}" → "${newTitle}"` },
+    ],
+  };
+}
+
+async function handlePurge(argsStr: string): Promise<CommandResult> {
+  const id = parseInt(argsStr);
+  if (isNaN(id)) {
+    return {
+      output: [
+        { type: "error", content: "Missing note ID" },
+        { type: "dim", content: "Usage: purge <id>" },
+        { type: "dim", content: 'Tip: Use "trash" to see deleted notes' },
+      ],
+    };
+  }
+
+  const note = await getNote(id);
+  if (!note) {
+    return {
+      output: [{ type: "error", content: `Note #${id} not found` }],
+    };
+  }
+
+  if (!note.deleted) {
+    return {
+      output: [
+        { type: "warning", content: `Note #${id} is not in trash` },
+        { type: "dim", content: "Delete it first with: delete <id>" },
+      ],
+    };
+  }
+
+  await purgeNote(id);
+
+  return {
+    output: [
+      { type: "warning", content: `✓ Note #${id} "${note.title}" permanently deleted` },
+      { type: "dim", content: "  This cannot be undone" },
+    ],
+  };
+}
+
+async function handleStats(): Promise<CommandResult> {
+  const allNotes = await listNotes();
+  const deletedNotes = await getRecentlyDeleted();
+  const allTags = await getAllTags();
+
+  const totalWords = allNotes.reduce((sum, note) => {
+    const words = note.body.trim() ? note.body.trim().split(/\s+/).length : 0;
+    return sum + words;
+  }, 0);
+
+  const totalChars = allNotes.reduce((sum, note) => sum + note.body.length, 0);
+
+  // Calculate days since first note
+  const oldest = allNotes.reduce(
+    (min, note) => Math.min(min, note.createdAt),
+    Date.now()
+  );
+  const daysSinceFirst = allNotes.length > 0
+    ? Math.ceil((Date.now() - oldest) / (1000 * 60 * 60 * 24))
+    : 0;
+
+  // Find most recently updated note
+  const mostRecent = allNotes.reduce(
+    (latest, note) => (note.updatedAt > latest.updatedAt ? note : latest),
+    allNotes[0]
+  );
+
+  return {
+    output: [
+      { type: "info", content: "╭───────────────────────────────────────────────╮" },
+      { type: "info", content: "│              GLYPH STATISTICS                 │" },
+      { type: "info", content: "╰───────────────────────────────────────────────╯" },
+      { type: "output", content: "" },
+      { type: "success", content: "NOTES" },
+      { type: "output", content: `  Total notes      ${allNotes.length}` },
+      { type: "output", content: `  In trash         ${deletedNotes.length}` },
+      { type: "output", content: `  Total tags       ${allTags.length}` },
+      { type: "output", content: "" },
+      { type: "success", content: "CONTENT" },
+      { type: "output", content: `  Total words      ${totalWords.toLocaleString()}` },
+      { type: "output", content: `  Total characters ${totalChars.toLocaleString()}` },
+      { type: "output", content: "" },
+      { type: "success", content: "ACTIVITY" },
+      { type: "output", content: `  Days active      ${daysSinceFirst}` },
+      ...(mostRecent
+        ? [
+            {
+              type: "output" as const,
+              content: `  Last edited      ${formatDate(mostRecent.updatedAt)}`,
+            },
+          ]
+        : []),
+      { type: "output", content: "" },
+      ...(allTags.length > 0
+        ? [
+            { type: "success" as const, content: "TOP TAGS" },
+            ...allTags.slice(0, 5).map(({ tag, count }) => ({
+              type: "output" as const,
+              content: `  ${tag.padEnd(20)} ${count} note${count !== 1 ? "s" : ""}`,
+            })),
           ]
         : []),
     ],

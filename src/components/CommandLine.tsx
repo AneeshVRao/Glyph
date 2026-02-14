@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useState, useEffect } from 'react';
+import { forwardRef, useCallback, useState, useEffect, useRef } from 'react';
 import { getAllCommands, getNoteTitles } from '@/lib/commands';
 
 interface CommandLineProps {
@@ -16,15 +16,22 @@ const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
   ({ value, onChange, onSubmit, onKeyDown, disabled, showPlaceholder = false }, ref) => {
     const [suggestion, setSuggestion] = useState('');
     const [noteTitles, setNoteTitles] = useState<{ id: number; title: string }[]>([]);
+    const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // Load note titles for autocomplete
+    // Load note titles once on mount + periodic refresh (not on every keystroke)
+    const refreshTitles = useCallback(async () => {
+      const titles = await getNoteTitles();
+      setNoteTitles(titles);
+    }, []);
+
     useEffect(() => {
-      const loadTitles = async () => {
-        const titles = await getNoteTitles();
-        setNoteTitles(titles);
+      refreshTitles();
+      // Refresh titles periodically to catch new/deleted notes
+      refreshTimerRef.current = setInterval(refreshTitles, 5000);
+      return () => {
+        if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
       };
-      loadTitles();
-    }, [value]); // Refresh when value changes (after operations)
+    }, [refreshTitles]);
 
     const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
       const newValue = e.target.value;
@@ -67,6 +74,8 @@ const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
         e.preventDefault();
         setSuggestion('');
         onSubmit(value);
+        // Refresh titles after command execution (e.g., after new/delete)
+        setTimeout(refreshTitles, 300);
       } else if (e.key === 'Tab' && suggestion) {
         e.preventDefault();
         onChange(value + suggestion);
@@ -74,7 +83,7 @@ const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
       } else {
         onKeyDown?.(e);
       }
-    }, [value, suggestion, disabled, onSubmit, onChange, onKeyDown]);
+    }, [value, suggestion, disabled, onSubmit, onChange, onKeyDown, refreshTitles]);
 
     // Placeholder hints for new users
     const placeholderText = showPlaceholder && !value 
@@ -99,18 +108,21 @@ const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            className="w-full bg-transparent border-none outline-none terminal-command text-base font-mono caret-primary"
+            className="w-full bg-transparent border-none outline-none terminal-command text-base font-mono caret-transparent"
             placeholder={placeholderText}
           />
-          {/* Autocomplete suggestion */}
-          {suggestion && (
-            <span className="absolute left-0 top-0 pointer-events-none">
-              <span className="invisible">{value}</span>
-              <span className="terminal-dim">{suggestion}</span>
-            </span>
-          )}
+          {/* Cursor + autocomplete overlay */}
+          <span className="absolute left-0 top-0 pointer-events-none flex items-center h-full">
+            {/* Hidden text measurement — takes up same width as typed text */}
+            <span className="invisible whitespace-pre font-mono text-base">{value || ''}</span>
+            {/* Blinking block cursor — positioned right after the text */}
+            <span className="w-2 h-5 bg-primary cursor-blink inline-block" />
+            {/* Autocomplete suggestion — appears after cursor */}
+            {suggestion && (
+              <span className="terminal-dim font-mono text-base">{suggestion}</span>
+            )}
+          </span>
         </div>
-        <span className="w-2 h-5 bg-primary cursor-blink" />
       </div>
     );
   }

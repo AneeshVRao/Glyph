@@ -52,8 +52,14 @@ const DEFAULT_CONFIG: Record<string, string> = {
   scanlines: "true",
   autosave: "true",
   dateFormat: "short",
-  undoTimeout: "30000", // 30 seconds in ms
 };
+
+// Sanitize text to prevent XSS when content is rendered
+function sanitizeText(text: string): string {
+  return text
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 // Configuration operations
 export async function getConfig(key: string): Promise<string> {
@@ -85,11 +91,18 @@ export async function createNote(
   body: string = "",
   tags: string[] = []
 ): Promise<Note> {
+  // Sanitize inputs
+  const safeTitle = sanitizeText(title.slice(0, 500)); // Max 500 char title
+  const safeBody = sanitizeText(body);
+  const safeTags = tags
+    .map((t) => sanitizeText(t.slice(0, 100))) // Max 100 char per tag
+    .slice(0, 50); // Max 50 tags
+
   const now = Date.now();
   const id = await db.notes.add({
-    title,
-    body,
-    tags,
+    title: safeTitle,
+    body: safeBody,
+    tags: safeTags,
     createdAt: now,
     updatedAt: now,
     deleted: false,
@@ -104,8 +117,22 @@ export async function updateNote(
   id: number,
   updates: Partial<Pick<Note, "title" | "body" | "tags">>
 ): Promise<Note | undefined> {
+  // Sanitize any provided fields
+  const sanitized: Partial<Pick<Note, "title" | "body" | "tags">> = {};
+  if (updates.title !== undefined) {
+    sanitized.title = sanitizeText(updates.title.slice(0, 500));
+  }
+  if (updates.body !== undefined) {
+    sanitized.body = sanitizeText(updates.body);
+  }
+  if (updates.tags !== undefined) {
+    sanitized.tags = updates.tags
+      .map((t) => sanitizeText(t.slice(0, 100)))
+      .slice(0, 50);
+  }
+
   await db.notes.update(id, {
-    ...updates,
+    ...sanitized,
     updatedAt: Date.now(),
   });
   return db.notes.get(id);
@@ -273,13 +300,58 @@ export async function exportNotes(): Promise<string> {
   );
 }
 
+// Validate that an imported note has the required shape
+function isValidNoteShape(
+  obj: unknown
+): obj is { title: string; body?: string; tags?: unknown[]; createdAt?: number; updatedAt?: number } {
+  if (obj === null || typeof obj !== "object") return false;
+  // Prevent prototype pollution: reject objects with __proto__ or constructor keys
+  const keys = Object.keys(obj as Record<string, unknown>);
+  if (keys.includes("__proto__") || keys.includes("constructor") || keys.includes("prototype")) {
+    return false;
+  }
+  const record = obj as Record<string, unknown>;
+  if (typeof record.title !== "string" || record.title.trim().length === 0) return false;
+  if (record.body !== undefined && typeof record.body !== "string") return false;
+  if (record.tags !== undefined && !Array.isArray(record.tags)) return false;
+  return true;
+}
+
 export async function importNotes(
   jsonData: string
 ): Promise<{ imported: number; skipped: number; duplicates: number }> {
-  const data = JSON.parse(jsonData);
+  // Size limit: reject imports larger than 50MB
+  if (jsonData.length > 50 * 1024 * 1024) {
+    throw new Error("Import file too large (max 50MB)");
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(jsonData);
+  } catch {
+    throw new Error("Invalid JSON format");
+  }
+
+  // Validate top-level structure
+  if (data === null || typeof data !== "object") {
+    throw new Error("Invalid import format: expected an object or array");
+  }
 
   // Handle both old format (array) and new format (object with notes array)
-  const notesToImport: Note[] = Array.isArray(data) ? data : data.notes || [];
+  const rawNotes: unknown[] = Array.isArray(data)
+    ? data
+    : Array.isArray((data as Record<string, unknown>).notes)
+      ? (data as Record<string, unknown>).notes as unknown[]
+      : [];
+
+  if (rawNotes.length === 0) {
+    throw new Error("No valid notes found in import data");
+  }
+
+  // Cap import at 10,000 notes
+  if (rawNotes.length > 10_000) {
+    throw new Error("Import exceeds maximum of 10,000 notes");
+  }
 
   let imported = 0;
   let skipped = 0;
@@ -290,16 +362,26 @@ export async function importNotes(
     existingNotes.map((n) => n.title.toLowerCase())
   );
 
-  for (const note of notesToImport) {
+  for (const rawNote of rawNotes) {
     try {
-      // Remove id to create new entries
-      const { id, ...noteData } = note;
+      // Validate shape
+      if (!isValidNoteShape(rawNote)) {
+        skipped++;
+        continue;
+      }
+
+      // Sanitize fields
+      const safeTitle = sanitizeText(rawNote.title.trim().slice(0, 500));
+      const safeBody = sanitizeText(typeof rawNote.body === "string" ? rawNote.body : "");
+      const safeTags = (Array.isArray(rawNote.tags) ? rawNote.tags : [])
+        .filter((t): t is string => typeof t === "string")
+        .map((t) => sanitizeText(t.slice(0, 100)))
+        .slice(0, 50);
 
       // Check for title collision
-      let finalTitle = noteData.title;
+      let finalTitle = safeTitle;
       if (existingTitles.has(finalTitle.toLowerCase())) {
-        // Add (imported) suffix or timestamp
-        finalTitle = `${noteData.title} (imported ${
+        finalTitle = `${safeTitle} (imported ${
           new Date().toISOString().split("T")[0]
         })`;
         duplicates++;
@@ -308,10 +390,12 @@ export async function importNotes(
       existingTitles.add(finalTitle.toLowerCase());
 
       await db.notes.add({
-        ...noteData,
         title: finalTitle,
-        deleted: false,
+        body: safeBody,
+        tags: safeTags,
+        createdAt: typeof rawNote.createdAt === "number" ? rawNote.createdAt : Date.now(),
         updatedAt: Date.now(),
+        deleted: false,
       });
       imported++;
     } catch {

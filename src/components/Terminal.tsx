@@ -7,7 +7,7 @@ import {
   type OutputLine,
   type CommandResult,
 } from "@/lib/commands";
-import { type Note } from "@/lib/db";
+import { type Note, purgeOldDeleted } from "@/lib/db";
 import { useConfig, applyTheme } from "@/hooks/useConfig";
 import CommandLine from "./CommandLine";
 import OutputDisplay from "./OutputDisplay";
@@ -47,6 +47,18 @@ export default function Terminal() {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [history]);
+
+  // Re-focus input whenever history changes (after clear, commands, errors)
+  // or when the editor closes
+  useEffect(() => {
+    if (!editorState && !isProcessing) {
+      // Small delay to ensure DOM has settled after state updates
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [history, editorState, isProcessing]);
 
   // Focus input on click
   const handleTerminalClick = useCallback(() => {
@@ -147,8 +159,15 @@ export default function Terminal() {
 
       setInputValue("");
       setIsProcessing(false);
+
+      // Re-focus input after command completes (fixes focus loss after clear, errors, etc.)
+      setTimeout(() => {
+        if (!editorState) {
+          inputRef.current?.focus();
+        }
+      }, 50);
     },
-    [isProcessing, refreshConfig]
+    [isProcessing, refreshConfig, editorState]
   );
 
   // Handle file import
@@ -289,7 +308,7 @@ export default function Terminal() {
           },
           {
             type: "info",
-            content: "│          TERMINAL NOTES v1.1.0                │",
+            content: "│               GLYPH v1.1.0                    │",
           },
           {
             type: "info",
@@ -297,7 +316,7 @@ export default function Terminal() {
           },
           {
             type: "info",
-            content: "│   Local-first • Offline-first • Yours        │",
+            content: "│      Local-first • Offline-first • Yours      │",
           },
           {
             type: "info",
@@ -315,6 +334,11 @@ export default function Terminal() {
         timestamp: Date.now(),
       },
     ]);
+
+    // Auto-clean old deleted notes (older than 7 days) on startup
+    purgeOldDeleted().catch(() => {
+      // Silently ignore purge errors on startup
+    });
   }, []);
 
   const scanlineClass = config.scanlines ? "scanlines" : "";

@@ -48,6 +48,10 @@ export default function NoteEditor({ note, isNew, onSave, onClose }: NoteEditorP
     }
   }, [body, tagInput, note, mode, onSave, onClose]);
 
+  // Calculate text stats
+  const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0;
+  const lineCount = body.split('\n').length;
+
   // Handle save
   const handleSave = useCallback(() => {
     const tags = tagInput
@@ -137,7 +141,7 @@ export default function NoteEditor({ note, isNew, onSave, onClose }: NoteEditorP
             [CTRL+T] {mode === 'edit' ? 'Edit Tags' : 'Back to Edit'}
           </button>
           <span className="terminal-dim">
-            {body.length} chars
+            {wordCount}w {lineCount}L {body.length}c
           </span>
         </div>
       </div>
