@@ -9,6 +9,15 @@ export interface Note {
   updatedAt: number;
   deleted: boolean;
   deletedAt?: number;
+  pinned?: boolean;
+  parentId?: number; // ID of the parent folder, undefined/null for root
+}
+
+export interface Folder {
+  id?: number;
+  name: string;
+  parentId?: number; // ID of the parent folder, undefined/null for root
+  createdAt: number;
 }
 
 export interface Config {
@@ -32,10 +41,19 @@ export class NotesDatabase extends Dexie {
   notes!: Table<Note>;
   config!: Table<Config>;
   recentlyDeleted!: Table<DeletedNote>;
+  folders!: Table<Folder>;
 
   constructor() {
     super("GlyphNotesDB");
 
+    this.version(3).stores({
+      notes: "++id, title, *tags, createdAt, updatedAt, deleted, parentId",
+      config: "++id, key",
+      recentlyDeleted: "++id, noteId, deletedAt",
+      folders: "++id, name, parentId, createdAt",
+    });
+    
+    // Previous versions for reference/migration if needed
     this.version(2).stores({
       notes: "++id, title, *tags, createdAt, updatedAt, deleted",
       config: "++id, key",
@@ -85,12 +103,69 @@ export async function getAllConfig(): Promise<Record<string, string>> {
   return result;
 }
 
+// Folder operations
+export async function createFolder(name: string, parentId?: number): Promise<Folder> {
+  const safeName = sanitizeText(name.trim().slice(0, 100)); // Max 100 char name
+  if (!safeName) throw new Error("Invalid folder name");
+
+  const now = Date.now();
+  const id = await db.folders.add({
+    name: safeName,
+    parentId,
+    createdAt: now,
+  } as Folder);
+
+  const folder = await db.folders.get(id);
+  if (!folder) throw new Error("Failed to create folder");
+  return folder;
+}
+
+export async function getFolder(id: number): Promise<Folder | undefined> {
+  return db.folders.get(id);
+}
+
+export async function listFolders(parentId?: number): Promise<Folder[]> {
+  if (parentId === undefined) {
+    return db.folders.where("parentId").equals("").or("parentId").equals(0).toArray(); 
+    // Dexie query for undefined/null is tricky, simpler to query all and filter for now or use specific index
+    // Let's rely on filter for accuracy in this step
+    const all = await db.folders.toArray();
+    return all.filter(f => !f.parentId); // Root folders
+  }
+  return db.folders.where("parentId").equals(parentId).toArray();
+}
+
+export async function getFolderContents(parentId?: number): Promise<{ notes: Note[], folders: Folder[] }> {
+  let notes: Note[];
+  let folders: Folder[];
+
+  if (parentId === undefined) {
+    // Root: items with no parentId
+    const allNotes = await db.notes.filter(n => !n.deleted).toArray();
+    notes = allNotes.filter(n => !n.parentId);
+    
+    const allFolders = await db.folders.toArray();
+    folders = allFolders.filter(f => !f.parentId);
+  } else {
+    notes = await db.notes.where("parentId").equals(parentId).and(n => !n.deleted).toArray();
+    folders = await db.folders.where("parentId").equals(parentId).toArray();
+  }
+  
+  return { notes, folders };
+}
+
 // Database operations
 export async function createNote(
   title: string,
   body: string = "",
-  tags: string[] = []
+  tags: string[] = [],
+  parentId?: number
 ): Promise<Note> {
+  // Validate inputs
+  if (!title || typeof title !== "string") {
+    throw new Error("Invalid title");
+  }
+
   // Sanitize inputs
   const safeTitle = sanitizeText(title.slice(0, 500)); // Max 500 char title
   const safeBody = sanitizeText(body);
@@ -106,7 +181,9 @@ export async function createNote(
     createdAt: now,
     updatedAt: now,
     deleted: false,
-  });
+    pinned: false,
+    parentId,
+  } as Note);
 
   const note = await db.notes.get(id);
   if (!note) throw new Error("Failed to create note");
@@ -115,10 +192,10 @@ export async function createNote(
 
 export async function updateNote(
   id: number,
-  updates: Partial<Pick<Note, "title" | "body" | "tags">>
+  updates: Partial<Pick<Note, "title" | "body" | "tags" | "parentId">>
 ): Promise<Note | undefined> {
   // Sanitize any provided fields
-  const sanitized: Partial<Pick<Note, "title" | "body" | "tags">> = {};
+  const sanitized: Partial<Pick<Note, "title" | "body" | "tags" | "parentId">> = {};
   if (updates.title !== undefined) {
     sanitized.title = sanitizeText(updates.title.slice(0, 500));
   }
@@ -130,12 +207,24 @@ export async function updateNote(
       .map((t) => sanitizeText(t.slice(0, 100)))
       .slice(0, 50);
   }
+  if (updates.parentId !== undefined) {
+    sanitized.parentId = updates.parentId;
+  }
 
   await db.notes.update(id, {
     ...sanitized,
     updatedAt: Date.now(),
   });
   return db.notes.get(id);
+}
+
+export async function togglePin(id: number): Promise<boolean> {
+  const note = await db.notes.get(id);
+  if (!note) return false;
+
+  const newPinnedState = !note.pinned;
+  await db.notes.update(id, { pinned: newPinnedState });
+  return newPinnedState;
 }
 
 // Soft delete - stores note for undo

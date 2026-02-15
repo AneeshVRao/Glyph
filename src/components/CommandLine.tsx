@@ -8,12 +8,13 @@ interface CommandLineProps {
   onKeyDown?: (e: React.KeyboardEvent) => void;
   disabled?: boolean;
   showPlaceholder?: boolean;
+  pathString?: string;
 }
 
 const COMMANDS = getAllCommands();
 
 const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
-  ({ value, onChange, onSubmit, onKeyDown, disabled, showPlaceholder = false }, ref) => {
+  ({ value, onChange, onSubmit, onKeyDown, disabled, showPlaceholder = false, pathString = "~" }, ref) => {
     const [suggestion, setSuggestion] = useState('');
     const [noteTitles, setNoteTitles] = useState<{ id: number; title: string }[]>([]);
     const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -94,7 +95,7 @@ const CommandLine = forwardRef<HTMLInputElement, CommandLineProps>(
 
     return (
       <div className="flex items-center gap-2 group">
-        <span className="terminal-prompt font-bold glow-text">$</span>
+        <span className="terminal-prompt font-bold glow-text whitespace-nowrap">{pathString} $</span>
         <div className="relative flex-1">
           <input
             ref={ref}

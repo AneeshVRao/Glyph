@@ -7,7 +7,10 @@ export const AVAILABLE_THEMES: Theme[] = ['crt', 'amber', 'mono', 'matrix', 'sol
 
 export interface AppConfig {
   theme: Theme;
-  scanlines: boolean;
+  scanlines: boolean; // Keeping for backward compatibility or valid simple scanlines
+  crtEnabled: boolean;
+  glowIntensity: number; // 0 to 1
+  soundEnabled: boolean;
   autosave: boolean;
   dateFormat: string;
 }
@@ -15,6 +18,9 @@ export interface AppConfig {
 const DEFAULT_CONFIG: AppConfig = {
   theme: 'crt',
   scanlines: true,
+  crtEnabled: true,
+  glowIntensity: 0.5,
+  soundEnabled: true,
   autosave: true,
   dateFormat: 'short'
 };
@@ -30,6 +36,9 @@ export function useConfig() {
       setConfigState({
         theme: (stored.theme as Theme) || 'crt',
         scanlines: stored.scanlines !== 'false',
+        crtEnabled: stored.crtEnabled !== 'false', // Default true
+        glowIntensity: stored.glowIntensity ? parseFloat(stored.glowIntensity) : 0.5,
+        soundEnabled: stored.soundEnabled !== 'false',
         autosave: stored.autosave !== 'false',
         dateFormat: stored.dateFormat || 'short'
       });
@@ -39,12 +48,12 @@ export function useConfig() {
   }, []);
 
   // Update a config value
-  const updateConfig = useCallback(async (key: keyof AppConfig, value: string | boolean) => {
+  const updateConfig = useCallback(async (key: keyof AppConfig, value: string | boolean | number) => {
     const strValue = String(value);
     await setConfig(key, strValue);
     setConfigState(prev => ({
       ...prev,
-      [key]: typeof value === 'boolean' ? value : value
+      [key]: value
     }));
   }, []);
 
@@ -54,6 +63,9 @@ export function useConfig() {
     setConfigState({
       theme: (stored.theme as Theme) || 'crt',
       scanlines: stored.scanlines !== 'false',
+      crtEnabled: stored.crtEnabled !== 'false',
+      glowIntensity: stored.glowIntensity ? parseFloat(stored.glowIntensity) : 0.5,
+      soundEnabled: stored.soundEnabled !== 'false',
       autosave: stored.autosave !== 'false',
       dateFormat: stored.dateFormat || 'short'
     });

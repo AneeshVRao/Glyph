@@ -17,26 +17,45 @@ import {
   setConfig,
   getAllConfig,
   getNoteTitles,
+  togglePin,
+  createFolder,
+  getFolder,
+  listFolders,
+  getFolderContents,
   type Note,
+  type Folder,
   type DeletedNote,
 } from "./db";
 import { AVAILABLE_THEMES } from "@/hooks/useConfig";
 
+export type OutputAction =
+  | { type: 'open'; id: number }
+  | { type: 'cd'; path: string }
+  | { type: 'run'; command: string };
+
 export type OutputLine = {
   type:
-    | "prompt"
-    | "output"
-    | "error"
-    | "warning"
-    | "info"
-    | "success"
-    | "success"
-    | "dim"
-    | "markdown"
-    | "highlight";
+  | "prompt"
+  | "output"
+  | "error"
+  | "warning"
+  | "info"
+  | "success"
+  | "success"
+  | "dim"
+  | "markdown"
+  | "highlight";
   content: string;
   timestamp?: number;
+  action?: OutputAction;
 };
+
+export interface ShellContext {
+  currentPath: number | undefined;
+  setCurrentPath: (id: number | undefined) => void;
+  pathString: string;
+  stdin?: string[];
+}
 
 export type CommandResult = {
   output: OutputLine[];
@@ -55,14 +74,35 @@ const COMMAND_DEFINITIONS = {
     desc: "Create a new note",
     examples: ['new "My Ideas"', "new project-notes"],
     category: "notes",
-    aliases: ["create", "add"],
+    aliases: ["create", "add", "touch"],
+  },
+  mkdir: {
+    usage: 'mkdir <name>',
+    desc: "Create a new directory",
+    examples: ['mkdir projects', 'mkdir "my stuff"'],
+    category: "item",
+    aliases: ["md"],
+  },
+  cd: {
+    usage: "cd <path>",
+    desc: "Change directory",
+    examples: ["cd projects", "cd ..", "cd ~"],
+    category: "item",
+    aliases: ["chdir"],
+  },
+  pwd: {
+    usage: "pwd",
+    desc: "Print working directory",
+    examples: ["pwd"],
+    category: "item",
+    aliases: [],
   },
   list: {
-    usage: "list [limit]",
-    desc: "List all notes",
-    examples: ["list", "list 10"],
-    category: "notes",
-    aliases: ["ls"],
+    usage: "list",
+    desc: "List directory contents",
+    examples: ["list", "ls"],
+    category: "item",
+    aliases: ["ls", "dir", "ll"],
   },
   open: {
     usage: "open <id|title>",
@@ -99,6 +139,20 @@ const COMMAND_DEFINITIONS = {
     category: "notes",
     aliases: ["deleted"],
   },
+  pin: {
+    usage: "pin <id>",
+    desc: "Pin a note to the top",
+    examples: ["pin 1"],
+    category: "notes",
+    aliases: ["star", "favorite"],
+  },
+  unpin: {
+    usage: "unpin <id>",
+    desc: "Unpin a note",
+    examples: ["unpin 1"],
+    category: "notes",
+    aliases: ["unstar"],
+  },
   rename: {
     usage: 'rename <id> "new title"',
     desc: "Rename a note",
@@ -120,7 +174,14 @@ const COMMAND_DEFINITIONS = {
     desc: "Search notes",
     examples: ["search javascript", 'search "my idea"'],
     category: "search",
-    aliases: ["find", "grep"],
+    aliases: ["find"],
+  },
+  grep: {
+    usage: "grep <pattern>",
+    desc: "Filter output",
+    examples: ['list | grep "work"', 'list | grep #1'],
+    category: "item",
+    aliases: ["filter"],
   },
   tags: {
     usage: "tags [name]",
@@ -277,7 +338,8 @@ function formatNoteRow(note: Note, highlightQuery?: string): string {
   }
 
   const tags = note.tags.length > 0 ? `[${note.tags.join(", ")}]` : "";
-  return `#${id}  ${title}  ${tags}`;
+  const pinned = note.pinned ? "📌 " : "";
+  return `${pinned}#${id}  ${title}  ${tags}`;
 }
 
 // Resolve command aliases
@@ -290,7 +352,7 @@ function resolveAlias(cmd: string): string {
   return cmd;
 }
 
-export async function parseAndExecute(input: string): Promise<CommandResult> {
+export async function parseAndExecute(input: string, context: ShellContext): Promise<CommandResult> {
   const trimmed = input.trim();
   if (!trimmed) {
     return { output: [] };
@@ -306,7 +368,8 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
   }
 
   // Parse command and arguments
-  const match = trimmed.match(/^(\w+)(?:\s+(.*))?$/s);
+  // Parse command and arguments (allow hyphens in command names)
+  const match = trimmed.match(/^([\w-]+)(?:\s+(.*))?$/s);
   if (!match) {
     return {
       output: [
@@ -324,10 +387,24 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
         return showHelp(argsStr.trim());
 
       case "new":
-        return await handleNew(argsStr);
+        return await handleNew(argsStr, context);
+
+      case "grep":
+        return handleGrep(argsStr, context);
+
+      case "mkdir":
+        return await handleMkdir(argsStr, context);
+
+      case "cd":
+        return await handleCd(argsStr, context);
+
+      case "pwd":
+        return {
+          output: [{ type: "info", content: context.pathString }],
+        };
 
       case "list":
-        return await handleList(argsStr);
+        return await handleList(context);
 
       case "open":
         return await handleOpen(argsStr);
@@ -360,7 +437,10 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
         return await handleToday();
 
       case "export":
-        return handleExport();
+        return {
+          output: [{ type: "success", content: "Initiating export..." }],
+          triggerExport: true,
+        };
 
       case "import":
         return handleImport();
@@ -371,10 +451,25 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
       case "clear":
         return { output: [], shouldClear: true };
 
+      case "pin":
+        return await handlePin(argsStr);
+
+      case "unpin":
+        return await handleUnpin(argsStr);
+
       case "version":
         return {
           output: [
-            { type: "info", content: "Glyph v1.1.0" },
+            {
+              type: "info",
+              content: `
+  ________    __  ______  __  __ 
+ / ____/ /   / / / / __ \\/ / / / 
+/ / __/ /   / /_/ / /_/ / /_/ /  
+/ /_/ / /___/ __  / ____/ __  /   
+\\____/_____/_/ /_/_/   /_/ /_/    v2.1.0
+`,
+            },
             {
               type: "dim",
               content: "Terminal-style note-taking • Local-first • Offline",
@@ -413,9 +508,8 @@ export async function parseAndExecute(input: string): Promise<CommandResult> {
       output: [
         {
           type: "error",
-          content: `Error: ${
-            error instanceof Error ? error.message : "Unknown error"
-          }`,
+          content: `Error: ${error instanceof Error ? error.message : "Unknown error"
+            }`,
         },
       ],
     };
@@ -479,7 +573,7 @@ function showHelp(specificCommand?: string): CommandResult {
     },
     {
       type: "info",
-      content: "│          GLYPH v1.1 - COMMANDS                │",
+      content: "│          GLYPH v2.1 - COMMANDS                │",
     },
     {
       type: "info",
@@ -518,7 +612,7 @@ function showHelp(specificCommand?: string): CommandResult {
   return { output };
 }
 
-async function handleNew(argsStr: string): Promise<CommandResult> {
+async function handleNew(argsStr: string, context: ShellContext): Promise<CommandResult> {
   // Extract title from quotes or use entire string
   const titleMatch = argsStr.match(/^"([^"]+)"$|^'([^']+)'$|^(.+)$/);
   const title =
@@ -534,7 +628,7 @@ async function handleNew(argsStr: string): Promise<CommandResult> {
     };
   }
 
-  const note = await createNote(title.trim());
+  const note = await createNote(title.trim(), "", [], context.currentPath);
 
   return {
     output: [
@@ -545,36 +639,101 @@ async function handleNew(argsStr: string): Promise<CommandResult> {
   };
 }
 
-async function handleList(argsStr: string): Promise<CommandResult> {
-  const limit = parseInt(argsStr) || 20;
-  const notes = await listNotes();
+async function handleList(context: ShellContext): Promise<CommandResult> {
+  const { notes, folders } = await getFolderContents(context.currentPath);
 
-  if (notes.length === 0) {
+  if (notes.length === 0 && folders.length === 0) {
     return {
       output: [
-        { type: "dim", content: "No notes yet." },
-        { type: "output", content: "" },
-        { type: "info", content: "Get started:" },
-        { type: "dim", content: '  $ new "My First Note"' },
+        { type: "dim", content: "(empty)" },
       ],
     };
   }
 
-  const sorted = notes
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, limit);
+  const output: OutputLine[] = [];
+
+  // List folders first
+  folders.forEach(f => {
+    output.push({
+      type: "info", // Blue/Info color for folders
+      content: `${f.name}/`,
+      action: { type: 'cd', path: f.name }
+    });
+  });
+
+  // Then notes
+  notes
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    })
+    .forEach(n => {
+      output.push({
+        type: "output",
+        content: formatNoteRow(n),
+        action: { type: 'open', id: n.id! }
+      });
+    });
 
   return {
     output: [
-      { type: "info", content: `─── Notes (${notes.length} total) ───` },
-      { type: "output", content: "" },
-      ...sorted.map((note) => ({
-        type: "output" as const,
-        content: formatNoteRow(note),
-      })),
-      { type: "output", content: "" },
-      { type: "dim", content: `Showing ${sorted.length} of ${notes.length}` },
-    ],
+      ...output,
+      { type: "dim", content: `Total: ${folders.length + notes.length} item(s)` },
+    ]
+  };
+}
+
+async function handleMkdir(argsStr: string, context: ShellContext): Promise<CommandResult> {
+  const nameMatch = argsStr.match(/^"([^"]+)"$|^'([^']+)'$|^(.+)$/);
+  const name = nameMatch?.[1] || nameMatch?.[2] || nameMatch?.[3];
+
+  if (!name?.trim()) {
+    return {
+      output: [{ type: "error", content: "Missing directory name" }],
+    };
+  }
+
+  try {
+    await createFolder(name.trim(), context.currentPath);
+    return {
+      output: [{ type: "success", content: `✓ Directory "${name.trim()}" created` }],
+    };
+  } catch (e) {
+    return {
+      output: [{ type: "error", content: `Failed to create directory: ${e}` }],
+    };
+  }
+}
+
+async function handleCd(argsStr: string, context: ShellContext): Promise<CommandResult> {
+  const path = argsStr.trim();
+
+  if (!path || path === "~" || path === "/") {
+    context.setCurrentPath(undefined);
+    return { output: [] };
+  }
+
+  if (path === "..") {
+    if (context.currentPath === undefined) {
+      // Already at root
+      return { output: [] };
+    }
+    const current = await getFolder(context.currentPath);
+    context.setCurrentPath(current?.parentId);
+    return { output: [] };
+  }
+
+  // Find folder in current directory
+  const { folders } = await getFolderContents(context.currentPath);
+  const target = folders.find(f => f.name.toLowerCase() === path.toLowerCase());
+
+  if (target) {
+    context.setCurrentPath(target.id);
+    return { output: [] };
+  }
+
+  return {
+    output: [{ type: "error", content: `cd: ${path}: No such directory` }],
   };
 }
 
@@ -884,6 +1043,51 @@ function handleImport(): CommandResult {
   };
 }
 
+async function handlePin(argsStr: string): Promise<CommandResult> {
+  const id = parseInt(argsStr);
+  if (isNaN(id)) {
+    return { output: [{ type: "error", content: "Invalid note ID" }] };
+  }
+
+  const result = await togglePin(id);
+  // If togglePin returns false, it might mean note not found OR it was unpinned (if logic was toggled)
+  // But togglePin returns the NEW boolean state.
+  // Wait, my togglePin implementation returns false if note not found.
+  // Use getNote to check existence first? No, togglePin returns boolean, but I need to know if it failed.
+  // Actually, let's just check existence first to be safe.
+
+  const note = await getNote(id);
+  if (!note || note.deleted) {
+    return { output: [{ type: "error", content: `Note #${id} not found` }] };
+  }
+
+  if (note.pinned) {
+    return { output: [{ type: "warning", content: `Note #${id} is already pinned` }] };
+  }
+
+  await togglePin(id);
+  return { output: [{ type: "success", content: `✓ Pinned note #${id}` }] };
+}
+
+async function handleUnpin(argsStr: string): Promise<CommandResult> {
+  const id = parseInt(argsStr);
+  if (isNaN(id)) {
+    return { output: [{ type: "error", content: "Invalid note ID" }] };
+  }
+
+  const note = await getNote(id);
+  if (!note || note.deleted) {
+    return { output: [{ type: "error", content: `Note #${id} not found` }] };
+  }
+
+  if (!note.pinned) {
+    return { output: [{ type: "warning", content: `Note #${id} is not pinned` }] };
+  }
+
+  await togglePin(id);
+  return { output: [{ type: "success", content: `✓ Unpinned note #${id}` }] };
+}
+
 async function handleConfig(argsStr: string): Promise<CommandResult> {
   const parts = argsStr.trim().split(/\s+/);
   const [key, ...valueParts] = parts;
@@ -920,7 +1124,7 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
   }
 
   // Validate known config keys
-  const validKeys = ["theme", "scanlines", "autosave", "dateFormat"];
+  const validKeys = ["theme", "scanlines", "autosave", "dateFormat", "crtEnabled", "glowIntensity", "soundEnabled"];
   if (!validKeys.includes(key.toLowerCase())) {
     return {
       output: [
@@ -942,7 +1146,7 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
 
   // Validate boolean values
   if (
-    (key === "scanlines" || key === "autosave") &&
+    ["scanlines", "autosave", "crtEnabled", "soundEnabled"].includes(key) &&
     !["true", "false"].includes(value)
   ) {
     return {
@@ -953,6 +1157,19 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
     };
   }
 
+  // Validate number values
+  if (key === "glowIntensity") {
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0 || num > 1) {
+      return {
+        output: [
+          { type: "error", content: `Invalid value for ${key}: ${value}` },
+          { type: "dim", content: "Use a number between 0 and 1" },
+        ]
+      };
+    }
+  }
+
   // Set config
   await setConfig(key, value);
 
@@ -961,11 +1178,11 @@ async function handleConfig(argsStr: string): Promise<CommandResult> {
       { type: "success", content: `✓ ${key} = ${value}` },
       ...(key === "theme"
         ? [
-            {
-              type: "dim" as const,
-              content: "Theme updated. Changes apply immediately.",
-            },
-          ]
+          {
+            type: "dim" as const,
+            content: "Theme updated. Changes apply immediately.",
+          },
+        ]
         : []),
     ],
   };
@@ -1095,23 +1312,52 @@ async function handleStats(): Promise<CommandResult> {
       { type: "output", content: `  Days active      ${daysSinceFirst}` },
       ...(mostRecent
         ? [
-            {
-              type: "output" as const,
-              content: `  Last edited      ${formatDate(mostRecent.updatedAt)}`,
-            },
-          ]
+          {
+            type: "output" as const,
+            content: `  Last edited      ${formatDate(mostRecent.updatedAt)}`,
+          },
+        ]
         : []),
       { type: "output", content: "" },
       ...(allTags.length > 0
         ? [
-            { type: "success" as const, content: "TOP TAGS" },
-            ...allTags.slice(0, 5).map(({ tag, count }) => ({
-              type: "output" as const,
-              content: `  ${tag.padEnd(20)} ${count} note${count !== 1 ? "s" : ""}`,
-            })),
-          ]
+          { type: "success" as const, content: "TOP TAGS" },
+          ...allTags.slice(0, 5).map(({ tag, count }) => ({
+            type: "output" as const,
+            content: `  ${tag.padEnd(20)} ${count} note${count !== 1 ? "s" : ""}`,
+          })),
+        ]
         : []),
     ],
+  };
+}
+
+function handleGrep(argsStr: string, context: ShellContext): CommandResult {
+  const pattern = argsStr.trim();
+  if (!pattern) {
+    return {
+      output: [{ type: "error", content: "Missing pattern" }],
+    };
+  }
+
+  if (!context.stdin || context.stdin.length === 0) {
+    return {
+      output: [{ type: "error", content: "grep: no input provided (pipe only)" }],
+    };
+  }
+
+  const regex = new RegExp(pattern, "i");
+  const filtered = context.stdin.filter((line) => regex.test(line));
+
+  if (filtered.length === 0) {
+    return { output: [] };
+  }
+
+  return {
+    output: filtered.map((line) => ({
+      type: "output",
+      content: line,
+    })),
   };
 }
 

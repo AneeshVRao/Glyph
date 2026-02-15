@@ -209,6 +209,60 @@
     background: hsl(var(--primary) / 0.3);
     color: hsl(var(--foreground));
   }
+
+  /* --- RETRO EFFECTS --- */
+
+  /* CRT Screen Overlay (Vignette + Scanlines + Flicker) */
+  .crt-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 9999;
+    background: 
+      /* Scanlines */
+      linear-gradient(
+        rgba(18, 16, 16, 0) 50%, 
+        rgba(0, 0, 0, 0.25) 50%
+      ),
+      /* Vignette */
+      radial-gradient(
+        circle at center,
+        transparent 50%,
+        rgba(0, 0, 0, 0.4) 100%
+      );
+    background-size: 100% 4px, 100% 100%;
+    animation: scanline-scroll 10s linear infinite;
+  }
+
+  @keyframes scanline-scroll {
+    0% { background-position: 0 0; }
+    100% { background-position: 0 100%; }
+  }
+
+  /* Chromatic Aberration / RGB Shift */
+  .chromatic-aberration {
+    text-shadow: 
+      -2px 0 1px rgba(255, 0, 0, 0.3),
+      2px 0 1px rgba(0, 255, 255, 0.3);
+  }
+
+  /* Screen Glow (bloom) */
+  .screen-glow {
+    filter: drop-shadow(0 0 10px rgba(var(--primary), 0.4));
+  }
+
+  /* Text flicker */
+  .text-flicker {
+    animation: textFlicker 0.01s infinite;
+  }
+
+  @keyframes textFlicker {
+    0% { opacity: 0.99; }
+    100% { opacity: 0.95; }
+  }
 }
 
 @layer utilities {
